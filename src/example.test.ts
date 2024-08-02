@@ -1,31 +1,51 @@
-import { Entity, MikroORM, PrimaryKey, Property } from '@mikro-orm/sqlite';
+import {
+  Embeddable,
+  Embedded,
+  Entity,
+  ManyToOne,
+  MikroORM,
+  PrimaryKey,
+  Property,
+  Ref,
+} from "@mikro-orm/sqlite";
+
+@Embeddable()
+export class Metadata {
+  // changing this to anything else makes it work, so it seems to be caused
+  // by the parent entity having a property with the same name
+  @Property({ nullable: true })
+  author?: string;
+}
 
 @Entity()
-class User {
-
+export class UserEntity {
   @PrimaryKey()
   id!: number;
 
   @Property()
-  name: string;
+  private!: boolean;
+}
 
-  @Property({ unique: true })
-  email: string;
+@Entity()
+export class PostEntity {
+  @PrimaryKey()
+  id!: number;
 
-  constructor(name: string, email: string) {
-    this.name = name;
-    this.email = email;
-  }
+  // "object: true" is necessary, otherwise it works fine
+  @Embedded(() => Metadata, { nullable: true, object: true })
+  meta?: Metadata;
 
+  @ManyToOne(() => UserEntity, { ref: true })
+  author!: Ref<UserEntity>;
 }
 
 let orm: MikroORM;
 
 beforeAll(async () => {
   orm = await MikroORM.init({
-    dbName: ':memory:',
-    entities: [User],
-    debug: ['query', 'query-params'],
+    dbName: ":memory:",
+    entities: [UserEntity, PostEntity],
+    debug: ["query", "query-params"],
     allowGlobalContext: true, // only for testing
   });
   await orm.schema.refreshDatabase();
@@ -35,17 +55,25 @@ afterAll(async () => {
   await orm.close(true);
 });
 
-test('basic CRUD example', async () => {
-  orm.em.create(User, { name: 'Foo', email: 'foo' });
+test("Embeddables erroring with duplicate property names", async () => {
+  const user = orm.em.create(UserEntity, { private: false });
+  orm.em.create(PostEntity, {
+    author: user,
+    meta: { author: "opengraph_author" },
+  });
+
   await orm.em.flush();
   orm.em.clear();
 
-  const user = await orm.em.findOneOrFail(User, { email: 'foo' });
-  expect(user.name).toBe('Foo');
-  user.name = 'Bar';
-  orm.em.remove(user);
-  await orm.em.flush();
-
-  const count = await orm.em.count(User, { email: 'foo' });
-  expect(count).toBe(0);
+  // this would throw "Invalid query condition: { author: { 'author.private': false } }"
+  await orm.em
+    .getRepository(PostEntity)
+    .createQueryBuilder()
+    .select("*")
+    // removing this caused it to throw "TypeError: Cannot read properties of undefined (reading '0')"
+    .leftJoinAndSelect("author", "author")
+    .where({
+      author: { private: false },
+    })
+    .getSingleResult();
 });
